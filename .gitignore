@@ -1,0 +1,6 @@
+data/*.h5
+data/*.tar.gz
+data/spatial/
+*.RData
+.Rhistory
+*.html

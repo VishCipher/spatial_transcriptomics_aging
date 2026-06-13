@@ -1,0 +1,460 @@
+---
+title: "Spatial Transcriptomics Analysis: Human Brain"
+author: "Vishishtaa Pandit"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  warning = FALSE, 
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7
+)
+```
+
+## 1. Introduction
+
+Spatial transcriptomics preserves the physical location of gene 
+expression within intact tissue sections. Unlike bulk RNA-seq, 
+which loses spatial information by homogenising tissue, spatial 
+transcriptomics allows us to ask not just *what* genes are 
+expressed, but *where* in the tissue they are active.
+
+This analysis uses the 10X Genomics Visium platform data from 
+human brain tissue (V1_Human_Brain_Section_1) to:
+
+1. Identify transcriptionally distinct spatial domains
+2. Map known cell type markers to anatomical regions
+3. Calculate spatial senescence burden across brain regions
+4. Cross-reference muscle ageing DEGs with brain spatial patterns
+
+## 2. Setup
+
+```{r libraries}
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+```
+
+## 3. Load Data
+
+```{r load_data}
+# Load 10X Visium data
+brain <- Load10X_Spatial(
+  data.dir = "data/",
+  filename = "V1_Human_Brain_Section_1_filtered_feature_bc_matrix.h5"
+)
+
+cat("Dataset dimensions:\n")
+cat("Genes:", nrow(brain), "\n")
+cat("Spots:", ncol(brain), "\n")
+```
+
+## 4. Quality Control
+
+```{r qc_plots, fig.width=12}
+# Calculate mitochondrial percentage
+brain[["percent.mt"]] <- PercentageFeatureSet(
+  brain, pattern = "^MT-"
+)
+
+# Visualise QC metrics on tissue
+p_counts <- SpatialFeaturePlot(
+  brain, 
+  features = "nCount_Spatial",
+  pt.size.factor = 1.2
+) + ggtitle("Total UMI Counts per Spot")
+
+p_features <- SpatialFeaturePlot(
+  brain,
+  features = "nFeature_Spatial", 
+  pt.size.factor = 1.2
+) + ggtitle("Genes Detected per Spot")
+
+p_counts + p_features
+```
+
+```{r save_qc, include=FALSE}
+png("figures/00_qc_spatial.png",
+    width = 14, height = 6, units = "in", res = 300)
+print(p_counts + p_features)
+dev.off()
+```
+
+```{r filter}
+# Filter low quality spots
+brain <- subset(
+  brain,
+  subset = nCount_Spatial > 500 &
+           nFeature_Spatial > 200 &
+           percent.mt < 25
+)
+
+cat("Spots after QC filtering:", ncol(brain), "\n")
+```
+
+## 5. Normalisation
+
+```{r normalise}
+# SCTransform normalisation — accounts for 
+# sequencing depth differences between spots
+brain <- SCTransform(
+  brain,
+  assay = "Spatial",
+  verbose = FALSE
+)
+```
+
+SCTransform uses a regularised negative binomial regression 
+to normalise gene expression, accounting for technical 
+variation between spots while preserving biological signal.
+
+## 6. Dimensionality Reduction and Clustering
+
+```{r clustering}
+brain <- RunPCA(brain, assay = "SCT", verbose = FALSE)
+brain <- FindNeighbors(brain, dims = 1:30, verbose = FALSE)
+brain <- FindClusters(brain, resolution = 0.5, verbose = FALSE)
+brain <- RunUMAP(brain, dims = 1:30, verbose = FALSE)
+
+cat("Number of clusters found:", 
+    length(unique(brain@meta.data$seurat_clusters)), "\n")
+```
+
+```{r cluster_plots, fig.width=14}
+p_umap <- DimPlot(
+  brain, 
+  reduction = "umap", 
+  label = TRUE,
+  label.size = 5
+) + 
+ggtitle("UMAP — Transcriptional Clusters") +
+theme_minimal()
+
+p_spatial <- SpatialDimPlot(
+  brain, 
+  label = TRUE, 
+  label.size = 3
+) + 
+ggtitle("Spatial Cluster Distribution")
+
+p_umap + p_spatial
+```
+
+```{r save_clusters, include=FALSE}
+png("figures/01_umap_spatial_clusters.png",
+    width = 14, height = 6, units = "in", res = 300)
+print(p_umap + p_spatial)
+dev.off()
+```
+
+The UMAP (left) shows transcriptional relationships between 
+spots regardless of location. The spatial plot (right) maps 
+these clusters onto the actual tissue, revealing that 
+transcriptionally similar spots occupy anatomically coherent 
+regions — validating the biological relevance of our clustering.
+
+## 7. Cluster Marker Genes
+
+```{r find_markers}
+markers <- FindAllMarkers(
+  brain,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25,
+  verbose = FALSE
+)
+
+markers$cluster <- as.factor(markers$cluster)
+
+top_markers <- do.call(rbind, lapply(
+  levels(markers$cluster), function(cl) {
+    sub <- markers[markers$cluster == cl, ]
+    sub <- sub[order(-sub$avg_log2FC), ]
+    head(sub, 5)
+  }
+))
+
+print(top_markers)
+```
+
+```{r marker_interpretation}
+# Known brain cell type markers
+cat("=== Cluster Biological Interpretation ===\n\n")
+cat("Cluster 0 — MBP, MOBP present:\n")
+cat("  → Likely WHITE MATTER / Oligodendrocytes\n")
+cat("  MBP (Myelin Basic Protein) is a hallmark of myelinating cells\n\n")
+cat("Cluster 1 — CARTPT, CALB1 present:\n") 
+cat("  → Likely specific NEURONAL populations\n")
+cat("  CALB1 (Calbindin) marks inhibitory interneurons\n\n")
+```
+
+```{r marker_spatial, fig.width=12, fig.height=10}
+# Visualise key markers spatially
+p_markers <- SpatialFeaturePlot(
+  brain,
+  features = c("MBP", "MOBP", "CARTPT", "CALB1"),
+  ncol = 2,
+  pt.size.factor = 1.2
+)
+
+print(p_markers)
+```
+
+```{r save_markers, include=FALSE}
+ggsave("figures/02_marker_genes_spatial.png",
+       plot = p_markers,
+       width = 12, height = 10,
+       dpi = 300)
+
+write.csv(markers,
+  "results/cluster_markers.csv", row.names = FALSE)
+write.csv(top_markers,
+  "results/top5_markers_per_cluster.csv", row.names = FALSE)
+```
+
+## 8. Spatial Senescence Burden
+
+Cellular senescence — where cells permanently exit the cell 
+cycle — is a hallmark of ageing. Here we calculate a 
+per-spot senescence score using a curated gene signature 
+and map it spatially to identify brain regions with highest 
+senescence burden.
+
+```{r senescence_score}
+# Curated senescence gene signature (SenMayo/CellAge)
+# Curated senescence genes
+senescence_genes <- c(
+  "CDKN1A", "CDKN2A", "TP53", "MDM2",
+  "IL6", "CXCL1", "MMP3", "SERPINE1",
+  "IGFBP3", "IGFBP5", "GLB1", "LMNB1",
+  "CCND1", "RB1", "E2F1", "PCNA",
+  "BCL2", "BAX", "CASP3", "ATM"
+)
+
+# Filter to genes present
+sen_present <- senescence_genes[
+  senescence_genes %in% rownames(brain)
+]
+
+cat("Senescence genes found:", length(sen_present), "\n")
+cat("Genes:", paste(sen_present, collapse = ", "), "\n")
+
+# Only run if enough genes found
+if (length(sen_present) >= 5) {
+  brain <- AddModuleScore(
+    brain,
+    features = list(sen_present),
+    name = "Senescence_Score",
+    nbin = 10  # reduce bins for small gene sets
+  )
+  cat("Senescence score calculated successfully\n")
+} else {
+  cat("Too few senescence genes found — skipping module score\n")
+  brain$Senescence_Score1 <- 0
+}
+```
+
+```{r senescence_plot, fig.width=12}
+p_sen <- SpatialFeaturePlot(
+  brain,
+  features = "Senescence_Score1",
+  pt.size.factor = 1.3
+) +
+scale_fill_gradient2(
+  low = "#2196F3",
+  mid = "white",
+  high = "#F44336",
+  midpoint = 0
+) +
+ggtitle("Spatial Senescence Burden — Human Brain") +
+theme(legend.position = "right")
+
+print(p_sen)
+```
+
+```{r save_senescence, include=FALSE}
+ggsave("figures/03_senescence_score_spatial.png",
+       plot = p_sen,
+       width = 10, height = 8,
+       dpi = 300)
+```
+
+## 9. Cross-Tissue Ageing Analysis
+
+Here we ask a novel question: do genes upregulated with 
+ageing in skeletal muscle (identified in our companion 
+bulk RNA-seq analysis) show spatially restricted expression 
+patterns in brain tissue?
+
+```{r cross_tissue}
+# Load muscle ageing DEGs from companion analysis
+muscle_file <- "../deseq2-aging-analysis/results/significant_DEGs.csv"
+
+if (file.exists(muscle_file)) {
+  muscle_degs <- read.csv(muscle_file)
+  
+  library(org.Hs.eg.db)
+  
+  # Convert ENSEMBL to gene symbols
+  muscle_symbols <- mapIds(
+    org.Hs.eg.db,
+    keys = muscle_degs$gene,
+    column = "SYMBOL",
+    keytype = "ENSEMBL",
+    multiVals = "first"
+  )
+  
+  # Find overlap with brain spatial data
+  muscle_in_brain <- na.omit(muscle_symbols[
+    muscle_symbols %in% rownames(brain)
+  ])
+  
+  cat("Muscle ageing DEGs:", nrow(muscle_degs), "\n")
+  cat("Found in brain spatial data:", 
+      length(muscle_in_brain), "\n")
+  
+  # Split by direction
+  up_ensembl <- muscle_degs %>%
+    filter(log2FoldChange > 0) %>%
+    pull(gene)
+  
+  up_symbols <- na.omit(muscle_symbols[up_ensembl])
+  up_in_brain <- up_symbols[up_symbols %in% rownames(brain)]
+  
+  down_ensembl <- muscle_degs %>%
+    filter(log2FoldChange < 0) %>%
+    pull(gene)
+  
+  down_symbols <- na.omit(muscle_symbols[down_ensembl])
+  down_in_brain <- down_symbols[down_symbols %in% rownames(brain)]
+  
+  cat("Upregulated in aged muscle, found in brain:", 
+      length(up_in_brain), "\n")
+  cat("Downregulated in aged muscle, found in brain:", 
+      length(down_in_brain), "\n")
+  
+  # Score brain spots
+  if (length(up_in_brain) > 0) {
+    brain <- AddModuleScore(
+      brain,
+      features = list(up_in_brain),
+      name = "MuscleAging_Up",
+      nbin = 10
+    )
+  }
+  
+  if (length(down_in_brain) > 0) {
+    brain <- AddModuleScore(
+      brain,
+      features = list(down_in_brain),
+      name = "MuscleAging_Down",
+      nbin = 10
+    )
+  }
+  
+} else {
+  cat("Muscle DEG file not found.\n")
+  cat("Run the DESeq2 aging analysis first.\n")
+}
+```
+
+```{r cross_tissue_plot, fig.width=14}
+if (file.exists(muscle_file) & length(up_in_brain) > 0) {
+  
+  p_up <- SpatialFeaturePlot(
+    brain,
+    features = "MuscleAging_Up1",
+    pt.size.factor = 1.2
+  ) +
+  scale_fill_gradient2(
+    low = "#2196F3", mid = "white", high = "#F44336",
+    midpoint = 0
+  ) +
+  ggtitle("Muscle Ageing Upregulated Genes in Brain")
+  
+  p_down <- SpatialFeaturePlot(
+    brain,
+    features = "MuscleAging_Down1",
+    pt.size.factor = 1.2
+  ) +
+  scale_fill_gradient2(
+    low = "#F44336", mid = "white", high = "#2196F3",
+    midpoint = 0
+  ) +
+  ggtitle("Muscle Ageing Downregulated Genes in Brain")
+  
+  print(p_up + p_down)
+  
+  ggsave("figures/04_cross_tissue_aging.png",
+         plot = p_up + p_down,
+         width = 14, height = 6,
+         dpi = 300)
+}
+```
+
+## 10. Spatially Variable Genes
+
+```{r svg, fig.width=14, fig.height=10}
+# Find spatially variable genes using Moran's I
+brain <- FindSpatiallyVariableFeatures(
+  brain,
+  assay = "SCT",
+  features = VariableFeatures(brain)[1:1000],
+  selection.method = "moransi"
+)
+
+top_svg <- SpatiallyVariableFeatures(
+  brain,
+  method = "moransi"
+)[1:6]
+
+cat("Top spatially variable genes:\n")
+print(top_svg)
+
+p_svg <- SpatialFeaturePlot(
+  brain,
+  features = top_svg,
+  ncol = 3,
+  pt.size.factor = 1.2
+)
+
+print(p_svg)
+```
+
+```{r save_svg, include=FALSE}
+ggsave("figures/05_spatially_variable_genes.png",
+       plot = p_svg,
+       width = 14, height = 10,
+       dpi = 300)
+```
+
+## 11. Summary
+
+```{r summary}
+cat("=== Analysis Summary ===\n")
+cat("Dataset: V1 Human Brain Section 1 (10X Visium)\n")
+cat("Spots after QC:", ncol(brain), "\n")
+cat("Genes analysed:", nrow(brain), "\n")
+cat("Clusters identified:", 
+    length(unique(brain@meta.data$seurat_clusters)), "\n")
+cat("Senescence genes mapped:", length(sen_present), "\n")
+
+if (exists("muscle_in_brain")) {
+  cat("Muscle ageing DEGs found in brain:", 
+      length(muscle_in_brain), "\n")
+}
+
+cat("\nKey finding:\n")
+cat("Transcriptional clusters correspond to anatomically\n")
+cat("coherent brain regions, with white matter clearly\n") 
+cat("delineated by MBP/MOBP expression.\n")
+```
