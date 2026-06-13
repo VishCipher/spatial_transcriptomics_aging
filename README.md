@@ -50,7 +50,7 @@ heterogeneity and spatial ageing signatures.
 - Cross-tissue: muscle DEGs from companion DESeq2 analysis
 
 ## Companion Analysis
-See [deseq2-aging-analysis](../deseq2-aging-analysis) for the 
+See [deseq2-aging-analysis](../[deseq2-aging-analysis](https://github.com/VishCipher/deseq2-aging-analysis)) for the 
 bulk RNA-seq analysis whose DEGs are used in Section 9.
 
 ## How to Reproduce
