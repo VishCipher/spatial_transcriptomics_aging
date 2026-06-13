@@ -9,7 +9,7 @@ heterogeneity and spatial ageing signatures.
    human brain tissue?
 2. Where is senescence burden spatially concentrated?
 3. Do skeletal muscle ageing DEGs show spatially restricted 
-   patterns in brain — suggesting shared cross-tissue ageing 
+   patterns in brain suggesting shared cross-tissue ageing 
    programmes?
 
 ## Dataset
